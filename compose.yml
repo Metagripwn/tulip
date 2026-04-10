@@ -20,6 +20,8 @@ services:
       - api
     environment:
       API_SERVER_ENDPOINT: http://api:5000/
+      TULIP_AUTH_USERNAME: ${TULIP_AUTH_USERNAME}
+      TULIP_AUTH_PASSWORD_HASH: ${TULIP_AUTH_PASSWORD_HASH}
 
   api:
     build:
@@ -84,17 +86,18 @@ services:
       TULIP_MONGO: mongo:27017
       TULIP_REDIS: redis://redis:6379
 
-  mcp:
-    build:
-      context: services/
-      target: mcp
-    restart: unless-stopped
-    depends_on:
-      - mongo
-    ports:
-      - "8080:8080"
-    environment:
-      MONGO_HOST: mongo:27017
+  # MCP service disabled - not needed
+  # mcp:
+  #   build:
+  #     context: services/
+  #     target: mcp
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - mongo
+  #   ports:
+  #     - "8080:8080"
+  #   environment:
+  #     MONGO_HOST: mongo:27017
 
   suricata:
     build: services/suricata

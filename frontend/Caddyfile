@@ -1,4 +1,8 @@
 :3000 {
+    basicauth {
+        {env.TULIP_AUTH_USERNAME} {env.TULIP_AUTH_PASSWORD_HASH}
+    }
+
     root * /app/public
 
     handle_path /api/* {
