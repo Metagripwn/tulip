@@ -7,7 +7,7 @@ ARG GO_VERSION=1.24
 
 ### BASE BUILDER
 FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS builder
-RUN apk add --no-cache git make build-base libpcap-dev
+RUN apk add --no-cache git make build-base libpcap-dev vectorscan-dev
 
 WORKDIR /build
 
@@ -26,6 +26,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 ### BASE IMAGE
 FROM alpine:${ALPINE_VERSION} AS base
+RUN apk add --no-cache ca-certificates vectorscan
 
 ### ENRICHER
 FROM base AS enricher
@@ -44,7 +45,6 @@ ENTRYPOINT ["./assembler"]
 
 ### API
 FROM base AS api
-RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 COPY --from=builder /build/api ./
@@ -52,7 +52,6 @@ ENTRYPOINT ["./api"]
 
 ### MCP
 FROM base AS mcp
-RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 COPY --from=builder /build/mcp ./
