@@ -19,11 +19,22 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import shutil
+import string
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
+
+try:
+    import ruamel.yaml
+    yaml = ruamel.yaml.YAML()
+    yaml.preserve_quotes = True
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
 
 
 # Default configuration values
@@ -45,6 +56,10 @@ DEFAULTS = {
     "VM_IP": "10.0.0.1",
     "GAME_SERVICES": "srv1:5000 srv2:3000 srv3:1337",
     "FLAGID_URL": "http://10.10.0.1:8081/flagId",
+    # Authentication
+    "TULIP_AUTH_USERNAME": "admin",
+    "TULIP_AUTH_PASSWORD_HASH": None,  # Will be generated dynamically
+    "_TULIP_AUTH_PASSWORD_PLAINTEXT": None,  # Temporary, not written to file
 }
 
 
@@ -58,6 +73,155 @@ class SetupScript:
         self.env_example_path = Path(".env.example")
         self.env_path = Path(".env")
         self.config_path = Path(".tulip-config.json")
+        # Directories to skip when scanning for services
+        self.service_blacklist = [
+            "traffic", "frontend", "services", "suricata",
+            ".git", "node_modules", "__pycache__", ".venv", "venv",
+            "ctf_proxy", "tulip"
+        ]
+
+    def discover_services(self, service_dirs: Optional[List[str]] = None) -> str:
+        """
+        Discover game services from docker-compose files.
+        Similar to ctf_proxy's service discovery.
+
+        Returns: Space-separated string of "name:port" pairs
+        """
+        if not HAS_YAML:
+            print("\n⚠️  Warning: ruamel.yaml not installed. Cannot auto-discover services.")
+            print("   Install with: pip install ruamel.yaml")
+            print("   Using default services instead.\n")
+            return DEFAULTS["GAME_SERVICES"]
+
+        services = []
+        dirs_to_scan = []
+
+        # Use provided directories or scan current directory
+        if service_dirs:
+            for dir_path in service_dirs:
+                d = Path(dir_path)
+                if not d.exists() or not d.is_dir():
+                    print(f"⚠️  Warning: {dir_path} is not a valid directory, skipping")
+                    continue
+                dirs_to_scan.append(d)
+        else:
+            print("\n🔍 Scanning for CTF game services...")
+            for item in Path(".").iterdir():
+                if not item.is_dir():
+                    continue
+                if item.name.startswith("."):
+                    continue
+                if item.name in self.service_blacklist:
+                    continue
+
+                # Check if it has a docker-compose file
+                if not (item / "docker-compose.yml").exists() and not (item / "docker-compose.yaml").exists():
+                    continue
+
+                # Ask user if this is a game service
+                response = input(f"   Is '{item.name}' a CTF game service? [y/N]: ").strip().lower()
+                if response in ['y', 'yes']:
+                    dirs_to_scan.append(item)
+
+        if not dirs_to_scan:
+            print("   No services found. Using defaults.")
+            return DEFAULTS["GAME_SERVICES"]
+
+        # Parse docker-compose files to extract ports
+        print("\n📋 Extracting service ports...")
+        for service_dir in dirs_to_scan:
+            compose_file = service_dir / "docker-compose.yml"
+            if not compose_file.exists():
+                compose_file = service_dir / "docker-compose.yaml"
+
+            try:
+                with open(compose_file, 'r') as f:
+                    compose_data = yaml.load(f)
+
+                if 'services' not in compose_data:
+                    continue
+
+                # Extract ports from all containers in this service
+                for container_name, container_config in compose_data['services'].items():
+                    if 'ports' not in container_config:
+                        continue
+
+                    ports = container_config['ports']
+                    if isinstance(ports, list):
+                        for port_mapping in ports:
+                            # Parse port mapping (can be "8080:80" or "0.0.0.0:8080:80")
+                            port_str = str(port_mapping)
+                            port_parts = port_str.split(':')
+
+                            # Get the exposed port (left side of mapping)
+                            if len(port_parts) >= 2:
+                                exposed_port = port_parts[-2]  # Second to last is the exposed port
+                                service_name = service_dir.name
+                                service_entry = f"{service_name}:{exposed_port}"
+
+                                if service_entry not in services:
+                                    services.append(service_entry)
+                                    print(f"   ✓ Found: {service_entry}")
+
+            except Exception as e:
+                print(f"   ⚠️  Error parsing {compose_file}: {e}")
+                continue
+
+        if not services:
+            print("   No ports found. Using defaults.")
+            return DEFAULTS["GAME_SERVICES"]
+
+        return " ".join(services)
+
+    def generate_password(self, length: int = 16) -> str:
+        """Generate a secure random password"""
+        alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+        password = ''.join(secrets.choice(alphabet) for _ in range(length))
+        return password
+
+    def hash_password_caddy(self, password: str) -> Optional[str]:
+        """Hash password using Caddy's hash-password command via Docker"""
+        try:
+            # Try using docker to run caddy hash-password
+            result = subprocess.run(
+                ['docker', 'run', '--rm', 'caddy', 'caddy', 'hash-password', '--plaintext', password],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            else:
+                print(f"⚠️  Warning: Failed to hash password with Caddy: {result.stderr}")
+                return None
+        except subprocess.TimeoutExpired:
+            print("⚠️  Warning: Caddy password hashing timed out")
+            return None
+        except FileNotFoundError:
+            print("⚠️  Warning: Docker not found. Cannot hash password.")
+            return None
+        except Exception as e:
+            print(f"⚠️  Warning: Error hashing password: {e}")
+            return None
+
+    def generate_auth_credentials(self) -> tuple[str, str, str]:
+        """
+        Generate authentication credentials.
+        Returns: (username, plaintext_password, password_hash)
+        """
+        username = "admin"
+        password = self.generate_password()
+        password_hash = self.hash_password_caddy(password)
+
+        if password_hash is None:
+            # Fallback: use a pre-generated hash for password "changeme"
+            print("\n⚠️  Using fallback password: changeme")
+            print("   Please change this after first login!")
+            password = "changeme"
+            # This is bcrypt hash of "changeme"
+            password_hash = "$2a$14$wlpmTeITF5VI0DpT1smL1uWyPx48GlIY.b4hN8gklmlQ4BKbRayR6"
+
+        return username, password, password_hash
 
     def parse_args(self) -> argparse.Namespace:
         """Parse command line arguments"""
@@ -66,15 +230,22 @@ class SetupScript:
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
 Examples:
-  ./setup.py                    # Quick start with defaults
-  ./setup.py --ctf              # Interactive CTF configuration
-  ./setup.py --vm-ip 10.60.1.1  # Override specific values
+  ./setup.py                              # Quick start with defaults
+  ./setup.py --discover-services          # Auto-discover game services
+  ./setup.py --service-dirs ../web ../api # Scan specific directories
+  ./setup.py --ctf                        # Interactive CTF configuration
+  ./setup.py --vm-ip 10.60.1.1            # Override specific values
+  ./setup.py --hash-password mypassword   # Hash a password for .env file
             """
         )
 
         # Mode flags
         parser.add_argument("--ctf", "--interactive", action="store_true",
                           help="Interactive CTF configuration mode")
+        parser.add_argument("--discover-services", action="store_true",
+                          help="Auto-discover game services from docker-compose files")
+        parser.add_argument("--service-dirs", nargs='+', metavar="DIR",
+                          help="Directories to scan for services (implies --discover-services)")
         parser.add_argument("--force", action="store_true",
                           help="Overwrite existing .env without prompting")
         parser.add_argument("--backup", action="store_true", default=True,
@@ -85,6 +256,8 @@ Examples:
                           help="Validate configuration without writing files")
         parser.add_argument("--show-config", action="store_true",
                           help="Display configuration and exit")
+        parser.add_argument("--hash-password", metavar="PASSWORD",
+                          help="Hash a password and exit (useful for manual .env editing)")
 
         # Infrastructure config
         parser.add_argument("--frontend-addr", metavar="ADDR",
@@ -138,6 +311,13 @@ Examples:
             config["TICK_START"] = start_time_local.strftime("%Y-%m-%dT%H:%M:%S%z")
             # Insert colon in timezone offset (2025-04-10T14:00:00+0200 -> 2025-04-10T14:00:00+02:00)
             config["TICK_START"] = config["TICK_START"][:-2] + ":" + config["TICK_START"][-2:]
+
+        # Generate authentication credentials
+        if config["TULIP_AUTH_PASSWORD_HASH"] is None:
+            username, password, password_hash = self.generate_auth_credentials()
+            config["TULIP_AUTH_USERNAME"] = username
+            config["TULIP_AUTH_PASSWORD_HASH"] = password_hash
+            config["_TULIP_AUTH_PASSWORD_PLAINTEXT"] = password
 
         return config
 
@@ -348,7 +528,17 @@ Examples:
             f.write(f'FLAG_REGEX="{config["FLAG_REGEX"]}"\n')
             f.write(f'VM_IP="{config["VM_IP"]}"\n')
             f.write(f'GAME_SERVICES="{config["GAME_SERVICES"]}"\n')
-            f.write(f'FLAGID_URL="{config["FLAGID_URL"]}"\n')
+            f.write(f'FLAGID_URL="{config["FLAGID_URL"]}"\n\n')
+
+            f.write("##############################\n")
+            f.write("# HTTP Basic Authentication\n")
+            f.write("##############################\n\n")
+
+            # Authentication
+            # IMPORTANT: Escape $ as $$ for docker-compose variable substitution
+            escaped_hash = config["TULIP_AUTH_PASSWORD_HASH"].replace("$", "$$")
+            f.write(f'TULIP_AUTH_USERNAME="{config["TULIP_AUTH_USERNAME"]}"\n')
+            f.write(f'TULIP_AUTH_PASSWORD_HASH="{escaped_hash}"\n')
 
     def show_config(self, config: Dict[str, str]) -> None:
         """Display configuration"""
@@ -375,14 +565,31 @@ Examples:
         print(f"  VM_IP: {config['VM_IP']}")
         print(f"  GAME_SERVICES: {config['GAME_SERVICES']}")
         print(f"  FLAGID_URL: {config['FLAGID_URL']}")
+
+        print("\nAuthentication:")
+        print(f"  USERNAME: {config['TULIP_AUTH_USERNAME']}")
+        print(f"  PASSWORD_HASH: {config['TULIP_AUTH_PASSWORD_HASH'][:20]}...{config['TULIP_AUTH_PASSWORD_HASH'][-10:]}")
+        if "_TULIP_AUTH_PASSWORD_PLAINTEXT" in config and config["_TULIP_AUTH_PASSWORD_PLAINTEXT"]:
+            print(f"  PASSWORD: {config['_TULIP_AUTH_PASSWORD_PLAINTEXT']}")
         print("="*60 + "\n")
 
     def print_next_steps(self, config: Dict[str, str]) -> None:
         """Print next steps for user"""
+        # Display credentials if they were generated
+        if "_TULIP_AUTH_PASSWORD_PLAINTEXT" in config and config["_TULIP_AUTH_PASSWORD_PLAINTEXT"]:
+            print("\n" + "="*60)
+            print("⚠️  IMPORTANT: Save your login credentials!")
+            print("="*60)
+            print(f"  Username: {config['TULIP_AUTH_USERNAME']}")
+            print(f"  Password: {config['_TULIP_AUTH_PASSWORD_PLAINTEXT']}")
+            print("="*60)
+
         print("\nNext steps:")
         print("  1. Review configuration: cat .env")
         print("  2. Start Tulip: docker compose up -d")
         print(f"  3. Access UI: http://{config['FRONTEND_ADDR'].replace('0.0.0.0', 'localhost')}")
+        if "_TULIP_AUTH_PASSWORD_PLAINTEXT" in config and config["_TULIP_AUTH_PASSWORD_PLAINTEXT"]:
+            print(f"     Login with username '{config['TULIP_AUTH_USERNAME']}' and the password above")
         print("\n  To capture traffic:")
         print(f"    sudo tcpdump -n -i eth0 -w - | nc localhost {config['INGESTOR_ADDR'].split(':')[1]}")
         print("\nDone! 🌷\n")
@@ -453,6 +660,20 @@ Examples:
         """Main entry point"""
         args = self.parse_args()
 
+        # Handle password hashing utility
+        if args.hash_password:
+            print("\n🔐 Hashing password...")
+            password_hash = self.hash_password_caddy(args.hash_password)
+            if password_hash:
+                # Escape $ for docker-compose .env files
+                escaped_hash = password_hash.replace("$", "$$")
+                print(f"\nOriginal hash: {password_hash}")
+                print(f"For .env file: {escaped_hash}")
+                print("\nCopy the 'For .env file' version to your .env file")
+            else:
+                print("\n❌ Failed to hash password. Make sure Docker is running.")
+            sys.exit(0)
+
         # Print header
         print("\n🌷 Tulip Auto-Setup")
         print("=" * 60)
@@ -460,7 +681,12 @@ Examples:
         # Generate defaults
         config = self.generate_defaults()
 
-        # Apply CLI arguments
+        # Discover services if requested
+        if args.discover_services or args.service_dirs:
+            discovered_services = self.discover_services(args.service_dirs)
+            config["GAME_SERVICES"] = discovered_services
+
+        # Apply CLI arguments (these override discovered services if both are provided)
         config = self.apply_cli_args(config, args)
 
         # Handle existing .env file

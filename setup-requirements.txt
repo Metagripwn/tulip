@@ -1,0 +1,4 @@
+# Optional dependencies for setup.py
+# Install with: pip install -r setup-requirements.txt
+
+ruamel.yaml>=0.17.0  # Required for auto-discovery of game services from docker-compose files
