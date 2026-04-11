@@ -24,7 +24,8 @@ import shutil
 import string
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, Any, List
 
@@ -40,6 +41,11 @@ except ImportError:
 # Default configuration values
 DEFAULT_TICK_LENGTH_MS = "120000"
 DEFAULT_GAME_INTERFACE = "game"
+DEFAULT_TICK_START_INTERVALS = [
+    ("30m", 30),
+    ("1h", 60),
+    ("2h", 120),
+]
 
 DEFAULTS = {
     # Tulip Infrastructure
@@ -142,6 +148,228 @@ class SetupScript:
             return str(ipaddress.ip_address(match.group(1)))
         except ValueError:
             return None
+
+    def format_env_datetime(self, value: datetime) -> str:
+        """Format a datetime for Tulip's .env file."""
+        formatted = value.astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
+        return formatted[:-2] + ":" + formatted[-2:]
+
+    def get_next_rounded_time(self, now: datetime, interval_minutes: int) -> datetime:
+        """Round up to the next future boundary for the given interval."""
+        now = now.astimezone()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        minutes_since_midnight = now.hour * 60 + now.minute
+        next_boundary = ((minutes_since_midnight // interval_minutes) + 1) * interval_minutes
+        days, rounded_minutes = divmod(next_boundary, 24 * 60)
+        return day_start + timedelta(days=days, minutes=rounded_minutes)
+
+    def get_tick_start_options(self, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """Build the next rounded TICK_START candidates."""
+        now = now.astimezone() if now else datetime.now().astimezone()
+        options: List[Dict[str, Any]] = []
+
+        for label, interval_minutes in DEFAULT_TICK_START_INTERVALS:
+            candidate = self.get_next_rounded_time(now, interval_minutes)
+            options.append(
+                {
+                    "value": self.format_env_datetime(candidate),
+                    "datetime": candidate,
+                    "label": label,
+                }
+            )
+
+        return options
+
+    def select_tick_start(self, now: Optional[datetime] = None) -> str:
+        """Select a TICK_START value from the next rounded candidates."""
+        options = self.get_tick_start_options(now)
+        default_option = options[0]
+
+        if not sys.stdin.isatty():
+            print(
+                f"✓ Auto-selected TICK_START: {default_option['value']} "
+                f"(next {default_option['label']} slot)"
+            )
+            return default_option["value"]
+
+        print("\n⏰ Select TICK_START:")
+        for index, option in enumerate(options, start=1):
+            print(
+                f"  [{index}] {option['value']}  "
+                f"(next {option['label']} slot)"
+            )
+        print(f"  [Enter] {default_option['value']}")
+
+        while True:
+            choice = input(f"\nChoice [1-{len(options)}]: ").strip().lower()
+            if choice == "":
+                return default_option["value"]
+            if choice.isdigit():
+                option_index = int(choice) - 1
+                if 0 <= option_index < len(options):
+                    return options[option_index]["value"]
+            print(f"Invalid choice. Please enter a number between 1 and {len(options)}.")
+
+    def prompt_yes_no(self, prompt: str, default: bool = False) -> bool:
+        """Ask a yes/no question in interactive terminals."""
+        if not sys.stdin.isatty():
+            return default
+
+        while True:
+            choice = input(prompt).strip().lower()
+            if choice == "":
+                return default
+            if choice in ["y", "yes"]:
+                return True
+            if choice in ["n", "no"]:
+                return False
+            print("Invalid choice. Please enter Y or N.")
+
+    def get_tcpdump_command(self, config: Dict[str, str]) -> str:
+        """Build the tcpdump pipeline command for Tulip."""
+        port = config["INGESTOR_ADDR"].split(":")[1]
+        return (
+            f"sudo tcpdump -n -i {self.game_interface} -w - | "
+            f"nc localhost {port}"
+        )
+
+    def start_tulip_services(self) -> bool:
+        """Start Tulip with docker compose up -d."""
+        if shutil.which("docker") is None:
+            print("⚠️  Warning: Docker is not installed or not in PATH.")
+            return False
+
+        print("\n🚀 Starting Tulip with docker compose up -d...\n")
+        try:
+            result = subprocess.run(["docker", "compose", "up", "-d"])
+        except FileNotFoundError:
+            print("⚠️  Warning: Docker is not installed or not in PATH.")
+            return False
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to start Tulip: {e}")
+            return False
+
+        if result.returncode != 0:
+            print("❌ docker compose up -d failed.")
+            return False
+
+        return True
+
+    def wait_for_running_services(self, timeout_seconds: int = 15) -> bool:
+        """Wait until docker compose reports running services."""
+        for _ in range(timeout_seconds):
+            try:
+                result = subprocess.run(
+                    ["docker", "compose", "ps", "--status", "running", "--services"],
+                    capture_output=True,
+                    text=True,
+                )
+            except Exception as e:
+                print(f"⚠️  Warning: Failed to verify running services: {e}")
+                return False
+
+            running_services = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            if result.returncode == 0 and running_services:
+                print(f"✓ Confirmed running services: {', '.join(running_services)}")
+                return True
+
+            time.sleep(1)
+
+        print("⚠️  Warning: docker compose up -d completed, but running services could not be confirmed.")
+        print("   Check with: docker compose ps")
+        return False
+
+    def start_tcpdump_tmux(self, config: Dict[str, str]) -> bool:
+        """Start tcpdump in a detached tmux session."""
+        session_name = "tcpdumper"
+        if shutil.which("tmux") is None:
+            print("⚠️  Warning: tmux is not installed or not in PATH.")
+            return False
+
+        try:
+            existing_session = subprocess.run(
+                ["tmux", "has-session", "-t", session_name],
+                capture_output=True,
+                text=True,
+            )
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to inspect tmux sessions: {e}")
+            return False
+
+        if existing_session.returncode == 0:
+            print(f"⚠️  Warning: tmux session '{session_name}' already exists.")
+            print(f"   Attach with: tmux attach -t {session_name}")
+            return False
+
+        print("\n📡 Preparing tcpdump in tmux session 'tcpdumper'...")
+        try:
+            sudo_result = subprocess.run(["sudo", "-v"])
+        except FileNotFoundError:
+            print("⚠️  Warning: sudo is not available.")
+            return False
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to validate sudo access: {e}")
+            return False
+
+        if sudo_result.returncode != 0:
+            print("⚠️  Warning: sudo authentication failed. tcpdump was not started.")
+            return False
+
+        tcpdump_command = self.get_tcpdump_command(config)
+        try:
+            start_result = subprocess.run(
+                ["tmux", "new-session", "-d", "-s", session_name, tcpdump_command],
+                capture_output=True,
+                text=True,
+            )
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to start tmux session: {e}")
+            return False
+
+        if start_result.returncode != 0:
+            print("⚠️  Warning: Failed to start tcpdump tmux session.")
+            if start_result.stderr:
+                print(start_result.stderr.strip())
+            return False
+
+        time.sleep(1)
+        check_result = subprocess.run(
+            ["tmux", "has-session", "-t", session_name],
+            capture_output=True,
+            text=True,
+        )
+        if check_result.returncode == 0:
+            print(f"✓ tcpdump started in tmux session '{session_name}'")
+            print(f"   Attach with: tmux attach -t {session_name}")
+            return True
+
+        print("⚠️  Warning: tmux session 'tcpdumper' exited immediately.")
+        print("   Check that sudo, tcpdump, and nc are available, then run the command manually:")
+        print(f"   {tcpdump_command}")
+        return False
+
+    def prompt_post_setup_actions(self, config: Dict[str, str]) -> tuple[bool, bool]:
+        """Offer to start Tulip and tcpdump after setup completes."""
+        tulip_running = False
+        tcpdump_running = False
+
+        if not sys.stdin.isatty():
+            return tulip_running, tcpdump_running
+
+        if not self.prompt_yes_no("\nStart Tulip now with docker compose up -d? [Y/n]: ", default=True):
+            return tulip_running, tcpdump_running
+
+        if not self.start_tulip_services():
+            return tulip_running, tcpdump_running
+
+        tulip_running = self.wait_for_running_services()
+        if not tulip_running:
+            return tulip_running, tcpdump_running
+
+        if self.prompt_yes_no("\nStart tcpdump in tmux session 'tcpdumper'? [y/N]: ", default=False):
+            tcpdump_running = self.start_tcpdump_tmux(config)
+
+        return tulip_running, tcpdump_running
 
     def get_default_service_scan_roots(self) -> List[Path]:
         """Return the default roots used for game service discovery."""
@@ -380,7 +608,7 @@ Examples:
 
         # CTF game config
         parser.add_argument("--tick-start", metavar="DATETIME",
-                          help="CTF start time (ISO 8601 format)")
+                          help="CTF start time (ISO 8601 format; default: next rounded 30m/1h/2h slot)")
         parser.add_argument("--flag-regex", metavar="REGEX",
                           help="Flag pattern regex (default: [A-Z0-9]{31}=)")
         parser.add_argument("--vm-ip", metavar="IP",
@@ -408,16 +636,9 @@ Examples:
         """Generate default configuration values"""
         config = DEFAULTS.copy()
 
-        # Generate TICK_START as current time + 5 minutes
+        # Generate TICK_START from the next rounded slot
         if config["TICK_START"] is None:
-            now = datetime.now(timezone.utc)
-            start_time = now + timedelta(minutes=5)
-            # Format as ISO 8601 with local timezone
-            local_tz = datetime.now().astimezone().tzinfo
-            start_time_local = start_time.astimezone(local_tz)
-            config["TICK_START"] = start_time_local.strftime("%Y-%m-%dT%H:%M:%S%z")
-            # Insert colon in timezone offset (2025-04-10T14:00:00+0200 -> 2025-04-10T14:00:00+02:00)
-            config["TICK_START"] = config["TICK_START"][:-2] + ":" + config["TICK_START"][-2:]
+            config["TICK_START"] = self.get_tick_start_options()[0]["value"]
 
         # Generate authentication credentials
         if config["TULIP_AUTH_PASSWORD_HASH"] is None:
@@ -680,7 +901,8 @@ Examples:
             print(f"  PASSWORD: {config['_TULIP_AUTH_PASSWORD_PLAINTEXT']}")
         print("="*60 + "\n")
 
-    def print_next_steps(self, config: Dict[str, str]) -> None:
+    def print_next_steps(self, config: Dict[str, str], tulip_running: bool = False,
+                         tcpdump_running: bool = False) -> None:
         """Print next steps for user"""
         # Display credentials if they were generated
         if "_TULIP_AUTH_PASSWORD_PLAINTEXT" in config and config["_TULIP_AUTH_PASSWORD_PLAINTEXT"]:
@@ -693,15 +915,19 @@ Examples:
 
         print("\nNext steps:")
         print("  1. Review configuration: cat .env")
-        print("  2. Start Tulip: docker compose up -d")
+        if tulip_running:
+            print("  2. Tulip is running: docker compose ps")
+        else:
+            print("  2. Start Tulip: docker compose up -d")
         print(f"  3. Access UI: http://{config['FRONTEND_ADDR'].replace('0.0.0.0', 'localhost')}")
         if "_TULIP_AUTH_PASSWORD_PLAINTEXT" in config and config["_TULIP_AUTH_PASSWORD_PLAINTEXT"]:
             print(f"     Login with username '{config['TULIP_AUTH_USERNAME']}' and the password above")
-        print("\n  To capture traffic:")
-        print(
-            f"    sudo tcpdump -n -i {self.game_interface} -w - | "
-            f"nc localhost {config['INGESTOR_ADDR'].split(':')[1]}"
-        )
+        if tcpdump_running:
+            print("\n  tcpdump session:")
+            print("    tmux attach -t tcpdumper")
+        else:
+            print("\n  To capture traffic:")
+            print(f"    {self.get_tcpdump_command(config)}")
         print("\nDone! 🌷\n")
 
     def merge_configs(self, base: Dict[str, str], override: Dict[str, str]) -> Dict[str, str]:
@@ -805,6 +1031,7 @@ Examples:
 
         # Handle existing .env file
         action = self.handle_existing_env(args)
+        existing = {}
 
         if action == "merge":
             existing = self.read_existing_env()
@@ -813,6 +1040,9 @@ Examples:
             print("Merging with existing .env file...")
 
         config["TICK_LENGTH"] = DEFAULT_TICK_LENGTH_MS
+
+        if args.tick_start is None and not existing.get("TICK_START"):
+            config["TICK_START"] = self.select_tick_start()
 
         # Validate configuration
         print("\nValidating configuration...")
@@ -846,8 +1076,10 @@ Examples:
         self.write_env_file(config)
         print(f"✓ Configuration written to .env")
 
+        tulip_running, tcpdump_running = self.prompt_post_setup_actions(config)
+
         # Print next steps
-        self.print_next_steps(config)
+        self.print_next_steps(config, tulip_running=tulip_running, tcpdump_running=tcpdump_running)
 
 
 def main():
