@@ -38,6 +38,9 @@ except ImportError:
 
 
 # Default configuration values
+DEFAULT_TICK_LENGTH_MS = "120000"
+DEFAULT_GAME_INTERFACE = "game"
+
 DEFAULTS = {
     # Tulip Infrastructure
     "FRONTEND_ADDR": "0.0.0.0:3000",
@@ -51,7 +54,7 @@ DEFAULTS = {
     "ASSEMBLER_CONNECTION_TIMEOUT": "1m",
     # CTF Game Config
     "TICK_START": None,  # Will be generated dynamically
-    "TICK_LENGTH": "120000",
+    "TICK_LENGTH": DEFAULT_TICK_LENGTH_MS,
     "FLAG_REGEX": "[A-Z0-9]{31}=",
     "VM_IP": "10.0.0.1",
     "GAME_SERVICES": "srv1:5000 srv2:3000 srv3:1337",
@@ -61,9 +64,6 @@ DEFAULTS = {
     "TULIP_AUTH_PASSWORD_HASH": None,  # Will be generated dynamically
     "_TULIP_AUTH_PASSWORD_PLAINTEXT": None,  # Temporary, not written to file
 }
-
-DEFAULT_GAME_INTERFACE = "game"
-
 
 class ValidationError(Exception):
     """Raised when configuration validation fails"""
@@ -340,8 +340,6 @@ Examples:
         # CTF game config
         parser.add_argument("--tick-start", metavar="DATETIME",
                           help="CTF start time (ISO 8601 format)")
-        parser.add_argument("--tick-length", metavar="MS", type=int,
-                          help="Tick length in milliseconds (default: 120000)")
         parser.add_argument("--flag-regex", metavar="REGEX",
                           help="Flag pattern regex (default: [A-Z0-9]{31}=)")
         parser.add_argument("--vm-ip", metavar="IP",
@@ -679,7 +677,6 @@ Examples:
             "ingestor_addr": "INGESTOR_ADDR",
             "ingestor_rotate": "INGESTOR_ROTATE",
             "tick_start": "TICK_START",
-            "tick_length": "TICK_LENGTH",
             "flag_regex": "FLAG_REGEX",
             "vm_ip": "VM_IP",
             "services": "GAME_SERVICES",
@@ -773,6 +770,8 @@ Examples:
             # Merge: existing values take precedence over defaults
             config = self.merge_configs(config, existing)
             print("Merging with existing .env file...")
+
+        config["TICK_LENGTH"] = DEFAULT_TICK_LENGTH_MS
 
         # Validate configuration
         print("\nValidating configuration...")

@@ -71,7 +71,7 @@ docker compose up -d --build
 ```
 sudo tcpdump -n --immediate-mode -s 65535 -U -w - | nc localhost 9999
 # or
-dumpcap -i eth0 -w - -F pcap  | nc localhost 9999
+dumpcap -i game -w - -F pcap  | nc localhost 9999
 ```
 
 #### Long explanation
