@@ -9,7 +9,7 @@ Tulip Auto-Setup Script
 
 Automatically generates .env configuration file with sensible defaults.
 Supports three modes:
-  1. Quick Start (default): All defaults, no prompts
+  1. Quick Start (default): Defaults with automatic service discovery
   2. CTF Interactive: Prompts for CTF-specific configuration
   3. CLI Arguments: All configuration via command line
 """
@@ -62,6 +62,8 @@ DEFAULTS = {
     "_TULIP_AUTH_PASSWORD_PLAINTEXT": None,  # Temporary, not written to file
 }
 
+DEFAULT_GAME_INTERFACE = "game"
+
 
 class ValidationError(Exception):
     """Raised when configuration validation fails"""
@@ -73,12 +75,73 @@ class SetupScript:
         self.env_example_path = Path(".env.example")
         self.env_path = Path(".env")
         self.config_path = Path(".tulip-config.json")
+        self.game_interface = DEFAULT_GAME_INTERFACE
         # Directories to skip when scanning for services
         self.service_blacklist = [
             "traffic", "frontend", "services", "suricata",
             ".git", "node_modules", "__pycache__", ".venv", "venv",
             "ctf_proxy", "tulip"
         ]
+
+    def detect_vm_ip(self, interface_name: Optional[str] = None) -> Optional[str]:
+        """Detect the IPv4 address for the game interface."""
+        interface_name = interface_name or self.game_interface
+        detection_commands = [
+            ["ip", "-j", "-4", "addr", "show", "dev", interface_name],
+            ["ip", "-4", "addr", "show", "dev", interface_name],
+            ["ifconfig", interface_name],
+        ]
+
+        for command in detection_commands:
+            try:
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+
+            if result.returncode != 0 or not result.stdout:
+                continue
+
+            ip_addr = self.extract_ipv4_from_output(command, result.stdout)
+            if ip_addr:
+                print(f"✓ Detected VM_IP from '{interface_name}' interface: {ip_addr}")
+                return ip_addr
+
+        print(
+            f"⚠️  Warning: Could not detect an IPv4 address for interface "
+            f"'{interface_name}'. Using default VM_IP: {DEFAULTS['VM_IP']}"
+        )
+        return None
+
+    def extract_ipv4_from_output(self, command: List[str], output: str) -> Optional[str]:
+        """Extract the first IPv4 address from interface inspection output."""
+        if command[:3] == ["ip", "-j", "-4"]:
+            try:
+                interface_data = json.loads(output)
+            except json.JSONDecodeError:
+                return None
+
+            for iface in interface_data:
+                for addr_info in iface.get("addr_info", []):
+                    if addr_info.get("family") != "inet":
+                        continue
+                    local_ip = addr_info.get("local")
+                    if local_ip:
+                        return local_ip
+            return None
+
+        match = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)(?:/\d+)?\b", output)
+        if not match:
+            return None
+
+        try:
+            return str(ipaddress.ip_address(match.group(1)))
+        except ValueError:
+            return None
 
     def discover_services(self, service_dirs: Optional[List[str]] = None) -> str:
         """
@@ -230,8 +293,9 @@ class SetupScript:
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
 Examples:
-  ./setup.py                              # Quick start with defaults
-  ./setup.py --discover-services          # Auto-discover game services
+  ./setup.py                              # Quick start with auto-discovered services
+  ./setup.py --discover-services          # Explicitly auto-discover game services
+  ./setup.py --no-discover-services       # Use default GAME_SERVICES values
   ./setup.py --service-dirs ../web ../api # Scan specific directories
   ./setup.py --ctf                        # Interactive CTF configuration
   ./setup.py --vm-ip 10.60.1.1            # Override specific values
@@ -242,8 +306,12 @@ Examples:
         # Mode flags
         parser.add_argument("--ctf", "--interactive", action="store_true",
                           help="Interactive CTF configuration mode")
-        parser.add_argument("--discover-services", action="store_true",
-                          help="Auto-discover game services from docker-compose files")
+        parser.add_argument("--discover-services", dest="discover_services",
+                          action="store_true", default=True,
+                          help="Auto-discover game services from docker-compose files (default: enabled)")
+        parser.add_argument("--no-discover-services", dest="discover_services",
+                          action="store_false",
+                          help="Disable auto-discovery and use default GAME_SERVICES unless overridden")
         parser.add_argument("--service-dirs", nargs='+', metavar="DIR",
                           help="Directories to scan for services (implies --discover-services)")
         parser.add_argument("--force", action="store_true",
@@ -277,7 +345,7 @@ Examples:
         parser.add_argument("--flag-regex", metavar="REGEX",
                           help="Flag pattern regex (default: [A-Z0-9]{31}=)")
         parser.add_argument("--vm-ip", metavar="IP",
-                          help="Vulnerable box IP address (default: 10.0.0.1)")
+                          help=f"Vulnerable box IP address (default: auto-detected from {DEFAULT_GAME_INTERFACE}, fallback: 10.0.0.1)")
         parser.add_argument("--services", metavar="SERVICES",
                           help="Game services (format: 'name:port name:port')")
         parser.add_argument("--flagid-url", metavar="URL",
@@ -591,7 +659,10 @@ Examples:
         if "_TULIP_AUTH_PASSWORD_PLAINTEXT" in config and config["_TULIP_AUTH_PASSWORD_PLAINTEXT"]:
             print(f"     Login with username '{config['TULIP_AUTH_USERNAME']}' and the password above")
         print("\n  To capture traffic:")
-        print(f"    sudo tcpdump -n -i eth0 -w - | nc localhost {config['INGESTOR_ADDR'].split(':')[1]}")
+        print(
+            f"    sudo tcpdump -n -i {self.game_interface} -w - | "
+            f"nc localhost {config['INGESTOR_ADDR'].split(':')[1]}"
+        )
         print("\nDone! 🌷\n")
 
     def merge_configs(self, base: Dict[str, str], override: Dict[str, str]) -> Dict[str, str]:
@@ -681,7 +752,12 @@ Examples:
         # Generate defaults
         config = self.generate_defaults()
 
-        # Discover services if requested
+        if args.vm_ip is None:
+            detected_vm_ip = self.detect_vm_ip()
+            if detected_vm_ip:
+                config["VM_IP"] = detected_vm_ip
+
+        # Discover services by default
         if args.discover_services or args.service_dirs:
             discovered_services = self.discover_services(args.service_dirs)
             config["GAME_SERVICES"] = discovered_services

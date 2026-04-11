@@ -92,7 +92,7 @@ func runEnricher(cmd *cobra.Command, args []string) {
 	{
 		"timestamp": "2022-05-17T19:39:57.283547+0000",
 		"flow_id": 1905964640824789,
-		"in_iface": "eth0",
+		"in_iface": "game",
 		"event_type": "alert",
 		"src_ip": "131.155.9.104",
 		"src_port": 53604,
