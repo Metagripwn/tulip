@@ -143,6 +143,53 @@ class SetupScript:
         except ValueError:
             return None
 
+    def get_default_service_scan_roots(self) -> List[Path]:
+        """Return the default roots used for game service discovery."""
+        cwd = Path.cwd().resolve()
+        candidate_roots = [cwd, cwd.parent]
+        scan_roots: List[Path] = []
+        seen_roots = set()
+
+        for root in candidate_roots:
+            root_key = str(root)
+            if root_key in seen_roots:
+                continue
+            seen_roots.add(root_key)
+            scan_roots.append(root)
+
+        return scan_roots
+
+    def find_service_directories(self, scan_roots: Optional[List[Path]] = None) -> List[Path]:
+        """Find directories that look like CTF services."""
+        scan_roots = scan_roots or self.get_default_service_scan_roots()
+        candidate_dirs: List[Path] = []
+        seen_dirs = set()
+
+        for scan_root in scan_roots:
+            try:
+                entries = list(scan_root.iterdir())
+            except OSError as e:
+                print(f"⚠️  Warning: Could not scan {scan_root}: {e}")
+                continue
+
+            for item in entries:
+                if not item.is_dir():
+                    continue
+                if item.name.startswith("."):
+                    continue
+                if item.name in self.service_blacklist:
+                    continue
+                if not (item / "docker-compose.yml").exists() and not (item / "docker-compose.yaml").exists():
+                    continue
+
+                item_key = str(item.resolve())
+                if item_key in seen_dirs:
+                    continue
+                seen_dirs.add(item_key)
+                candidate_dirs.append(item)
+
+        return candidate_dirs
+
     def discover_services(self, service_dirs: Optional[List[str]] = None) -> str:
         """
         Discover game services from docker-compose files.
@@ -159,7 +206,7 @@ class SetupScript:
         services = []
         dirs_to_scan = []
 
-        # Use provided directories or scan current directory
+        # Use provided directories or scan the current directory and its parent
         if service_dirs:
             for dir_path in service_dirs:
                 d = Path(dir_path)
@@ -169,18 +216,12 @@ class SetupScript:
                 dirs_to_scan.append(d)
         else:
             print("\n🔍 Scanning for CTF game services...")
-            for item in Path(".").iterdir():
-                if not item.is_dir():
-                    continue
-                if item.name.startswith("."):
-                    continue
-                if item.name in self.service_blacklist:
-                    continue
+            scan_roots = self.get_default_service_scan_roots()
+            print("   Search roots:")
+            for scan_root in scan_roots:
+                print(f"   - {scan_root}")
 
-                # Check if it has a docker-compose file
-                if not (item / "docker-compose.yml").exists() and not (item / "docker-compose.yaml").exists():
-                    continue
-
+            for item in self.find_service_directories(scan_roots):
                 # Ask user if this is a game service
                 response = input(f"   Is '{item.name}' a CTF game service? [y/N]: ").strip().lower()
                 if response in ['y', 'yes']:
