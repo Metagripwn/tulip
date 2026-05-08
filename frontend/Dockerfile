@@ -17,5 +17,5 @@ FROM caddy
 COPY --from=builder /app/dist /app/public
 COPY Caddyfile /etc/caddy/Caddyfile
 
-EXPOSE 3000
+EXPOSE 3030
 ENTRYPOINT [ "caddy", "run", "--config", "/etc/caddy/Caddyfile" ]

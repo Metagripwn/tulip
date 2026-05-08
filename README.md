@@ -69,9 +69,9 @@ docker compose up -d --build
 #### TLDR
 
 ```
-sudo tcpdump -n --immediate-mode -s 65535 -U -w - | nc localhost 9999
+sudo tcpdump -n --immediate-mode -s 65535 -U -w - | nc localhost 6969
 # or
-dumpcap -i game -w - -F pcap  | nc localhost 9999
+dumpcap -i game -w - -F pcap  | nc localhost 6969
 ```
 
 #### Long explanation

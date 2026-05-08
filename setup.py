@@ -49,10 +49,10 @@ DEFAULT_TICK_START_INTERVALS = [
 
 DEFAULTS = {
     # Tulip Infrastructure
-    "FRONTEND_ADDR": "0.0.0.0:3000",
+    "FRONTEND_ADDR": "0.0.0.0:3030",
     "TRAFFIC_DIR": "./traffic",
     "INGESTOR_ROTATE": "30s",
-    "INGESTOR_ADDR": "0.0.0.0:9999",
+    "INGESTOR_ADDR": "0.0.0.0:6969",
     "ASSEMBLER_TCP_LAZY": "true",
     "ASSEMBLER_EXPERIMENTAL": "true",
     "ASSEMBLER_NONSTRICT": "true",
@@ -598,11 +598,11 @@ Examples:
 
         # Infrastructure config
         parser.add_argument("--frontend-addr", metavar="ADDR",
-                          help="Frontend listen address (default: 0.0.0.0:3000)")
+                          help="Frontend listen address (default: 0.0.0.0:3030)")
         parser.add_argument("--traffic-dir", metavar="DIR",
                           help="Traffic directory path (default: ./traffic)")
         parser.add_argument("--ingestor-addr", metavar="ADDR",
-                          help="Ingestor listen address (default: 0.0.0.0:9999)")
+                          help="Ingestor listen address (default: 0.0.0.0:6969)")
         parser.add_argument("--ingestor-rotate", metavar="DURATION",
                           help="PCAP rotation interval (default: 30s)")
 
@@ -683,7 +683,7 @@ Examples:
         if not re.match(pattern, host_port):
             raise ValidationError(
                 f"Invalid host:port format: {host_port}\n"
-                "Expected format: host:port (e.g., 0.0.0.0:3000)"
+                "Expected format: host:port (e.g., 0.0.0.0:3030)"
             )
         return host_port
 

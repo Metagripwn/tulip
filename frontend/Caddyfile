@@ -1,4 +1,4 @@
-:3000 {
+:3030 {
     basicauth {
         {env.TULIP_AUTH_USERNAME} {env.TULIP_AUTH_PASSWORD_HASH}
     }
