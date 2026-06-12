@@ -72,6 +72,13 @@ DEFAULTS = {
     "_TULIP_AUTH_PASSWORD_PLAINTEXT": None,  # Temporary, not written to file
 }
 
+COMPOSE_FILE_NAMES = (
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+)
+
 class ValidationError(Exception):
     """Raised when configuration validation fails"""
     pass
@@ -408,7 +415,7 @@ class SetupScript:
                     continue
                 if item.name in self.service_blacklist:
                     continue
-                if not (item / "docker-compose.yml").exists() and not (item / "docker-compose.yaml").exists():
+                if self.find_compose_file(item) is None:
                     continue
 
                 item_key = str(item.resolve())
@@ -418,6 +425,14 @@ class SetupScript:
                 candidate_dirs.append(item)
 
         return candidate_dirs
+
+    def find_compose_file(self, service_dir: Path) -> Optional[Path]:
+        """Find a Docker Compose file in a service directory."""
+        for file_name in COMPOSE_FILE_NAMES:
+            compose_file = service_dir / file_name
+            if compose_file.exists():
+                return compose_file
+        return None
 
     def split_compose_port_mapping(self, port_mapping: str) -> List[str]:
         """Split a Compose short port mapping without splitting inside ${...}."""
@@ -560,9 +575,10 @@ class SetupScript:
         # Parse docker-compose files to extract ports
         print("\n📋 Extracting service ports...")
         for service_dir in dirs_to_scan:
-            compose_file = service_dir / "docker-compose.yml"
-            if not compose_file.exists():
-                compose_file = service_dir / "docker-compose.yaml"
+            compose_file = self.find_compose_file(service_dir)
+            if compose_file is None:
+                print(f"   ⚠️  No compose file found in {service_dir}, skipping")
+                continue
 
             try:
                 with open(compose_file, 'r') as f:
