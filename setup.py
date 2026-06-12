@@ -25,6 +25,7 @@ import string
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, Any, List
@@ -418,6 +419,103 @@ class SetupScript:
 
         return candidate_dirs
 
+    def split_compose_port_mapping(self, port_mapping: str) -> List[str]:
+        """Split a Compose short port mapping without splitting inside ${...}."""
+        parts = []
+        current = []
+        brace_depth = 0
+        bracket_depth = 0
+        i = 0
+
+        while i < len(port_mapping):
+            char = port_mapping[i]
+
+            if char == "$" and i + 1 < len(port_mapping) and port_mapping[i + 1] == "{":
+                brace_depth += 1
+                current.append("${")
+                i += 2
+                continue
+
+            if char == "}" and brace_depth:
+                brace_depth -= 1
+                current.append(char)
+                i += 1
+                continue
+
+            if char == "[" and not brace_depth:
+                bracket_depth += 1
+            elif char == "]" and bracket_depth and not brace_depth:
+                bracket_depth -= 1
+
+            if char == ":" and not brace_depth and not bracket_depth:
+                parts.append("".join(current))
+                current = []
+            else:
+                current.append(char)
+
+            i += 1
+
+        parts.append("".join(current))
+        return parts
+
+    def resolve_compose_interpolation(self, value: str) -> str:
+        """Resolve simple Docker Compose environment interpolation."""
+        braced_pattern = re.compile(
+            r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:-|:\?|\:\+|-|\?|\+)([^}]*))?\}"
+        )
+        unbraced_pattern = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+
+        def replace_braced(match: re.Match) -> str:
+            var_name = match.group(1)
+            operator = match.group(2)
+            replacement = match.group(3) or ""
+            env_value = os.environ.get(var_name)
+
+            if operator is None:
+                return env_value if env_value is not None else match.group(0)
+            if operator == ":-":
+                return env_value if env_value else replacement
+            if operator == "-":
+                return env_value if env_value is not None else replacement
+            if operator == ":?":
+                return env_value if env_value else match.group(0)
+            if operator == "?":
+                return env_value if env_value is not None else match.group(0)
+            if operator == ":+":
+                return replacement if env_value else ""
+            if operator == "+":
+                return replacement if env_value is not None else ""
+
+            return match.group(0)
+
+        def replace_unbraced(match: re.Match) -> str:
+            env_value = os.environ.get(match.group(1))
+            return env_value if env_value is not None else match.group(0)
+
+        return unbraced_pattern.sub(replace_unbraced, braced_pattern.sub(replace_braced, value))
+
+    def normalize_compose_port(self, port_value: Any) -> Optional[str]:
+        """Return a numeric port after resolving Compose interpolation."""
+        port = str(port_value).strip().strip("\"'")
+        port = port.split("/", 1)[0]
+        port = self.resolve_compose_interpolation(port).strip()
+        return port if port.isdigit() else None
+
+    def get_compose_published_port(self, port_mapping: Any) -> Optional[str]:
+        """Extract the host-published port from Compose short or long syntax."""
+        if isinstance(port_mapping, Mapping):
+            published = port_mapping.get("published")
+            if published is None:
+                return None
+            return self.normalize_compose_port(published)
+
+        port_str = str(port_mapping).strip()
+        port_parts = self.split_compose_port_mapping(port_str)
+        if len(port_parts) < 2:
+            return None
+
+        return self.normalize_compose_port(port_parts[-2])
+
     def discover_services(self, service_dirs: Optional[List[str]] = None) -> str:
         """
         Discover game services from docker-compose files.
@@ -481,15 +579,12 @@ class SetupScript:
                     ports = container_config['ports']
                     if isinstance(ports, list):
                         for port_mapping in ports:
-                            # Parse port mapping (can be "8080:80" or "0.0.0.0:8080:80")
-                            port_str = str(port_mapping)
-                            port_parts = port_str.split(':')
-
-                            # Get the exposed port (left side of mapping)
-                            if len(port_parts) >= 2:
-                                exposed_port = port_parts[-2]  # Second to last is the exposed port
+                            # Parse port mapping (can be "8080:80",
+                            # "0.0.0.0:8080:80", or "${PORT:-8080}:80").
+                            published_port = self.get_compose_published_port(port_mapping)
+                            if published_port:
                                 service_name = service_dir.name
-                                service_entry = f"{service_name}:{exposed_port}"
+                                service_entry = f"{service_name}:{published_port}"
 
                                 if service_entry not in services:
                                     services.append(service_entry)
