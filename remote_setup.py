@@ -126,23 +126,24 @@ to key authentication instead.
         return Path(self.choose("Select the SSH identity", [str(path) for path in candidates])).expanduser()
 
     def _ssh_prefix(self, known_hosts: Path, read_stdin: bool = False) -> List[str]:
-        prefix = [
-            "ssh", "-T", "-p", str(self.args.ssh_port),
-            "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known_hosts}",
-            "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
-        ]
+        prefix = ["ssh", "-T"]
+        if not read_stdin:
+            prefix.append("-n")
         if self.args.ssh_auth == "key":
             if self.identity_file is None:
                 raise RemoteSetupError("SSH identity has not been prepared")
-            prefix[3:3] = ["-i", str(self.identity_file), "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes"]
+            prefix.extend(["-i", str(self.identity_file), "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes"])
         else:
-            prefix[3:3] = [
+            prefix.extend([
                 "-o", "BatchMode=no", "-o", "PubkeyAuthentication=no",
                 "-o", "PreferredAuthentications=password,keyboard-interactive", "-o", "NumberOfPasswordPrompts=1",
-            ]
-        prefix.append(f"{self.args.ssh_user}@{self.args.ssh_host}")
-        if not read_stdin:
-            prefix.insert(3, "-n")
+            ])
+        prefix.extend([
+            "-p", str(self.args.ssh_port),
+            "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known_hosts}",
+            "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
+            f"{self.args.ssh_user}@{self.args.ssh_host}",
+        ])
         return prefix
 
     def remote(
