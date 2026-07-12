@@ -111,6 +111,10 @@ The UI binds to `0.0.0.0:3030` by default, so other machines on the local
 network can reach `http://<your-local-LAN-IP>:3030`. Use
 `--frontend-addr 127.0.0.1:3030` to keep it local-only.
 
+Remote setup generates a random Tulip UI password and prints it once during
+setup. Save it before closing the terminal; only its bcrypt hash is written to
+`.env`.
+
 The script prompts for the remote server IP/hostname and the `root` SSH
 password. The password is never put in `.env`, a Compose command, or a log; it
 is stored in a mode-0600 file under ignored `.tulip/ssh` so the local capture

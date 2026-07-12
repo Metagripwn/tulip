@@ -335,6 +335,11 @@ to key authentication instead.
 
     def build_config(self, vm_ip: str, services: str) -> Dict[str, str]:
         config = self.local.generate_defaults()
+        generated_auth = {
+            "TULIP_AUTH_USERNAME": config["TULIP_AUTH_USERNAME"],
+            "TULIP_AUTH_PASSWORD_HASH": config["TULIP_AUTH_PASSWORD_HASH"],
+            "_TULIP_AUTH_PASSWORD_PLAINTEXT": config["_TULIP_AUTH_PASSWORD_PLAINTEXT"],
+        }
         config.update({
             "FRONTEND_ADDR": self.args.frontend_addr,
             "TRAFFIC_DIR": self.args.traffic_dir,
@@ -353,7 +358,13 @@ to key authentication instead.
         if existing and not self.args.force:
             config = self.local.merge_configs(config, existing)
             # Remote discovery must win over values from an old local capture setup.
-            config.update({"FRONTEND_ADDR": self.args.frontend_addr, "INGESTOR_ADDR": "127.0.0.1:6969", "VM_IP": vm_ip, "GAME_SERVICES": services})
+            config.update({
+                "FRONTEND_ADDR": self.args.frontend_addr,
+                "INGESTOR_ADDR": "127.0.0.1:6969",
+                "VM_IP": vm_ip,
+                "GAME_SERVICES": services,
+                **generated_auth,
+            })
 
         validators = {
             "FRONTEND_ADDR": self.local.validate_host_port,
@@ -368,6 +379,15 @@ to key authentication instead.
         if config["GAME_SERVICES"]:
             config["GAME_SERVICES"] = self.local.validate_service_list(config["GAME_SERVICES"])
         return config
+
+    @staticmethod
+    def print_tulip_credentials(config: Dict[str, str]) -> None:
+        """Display the only copy of the generated UI password before writing .env."""
+        password = config.get("_TULIP_AUTH_PASSWORD_PLAINTEXT")
+        if password:
+            print("\nTulip UI credentials (save these now):")
+            print(f"  Username: {config['TULIP_AUTH_USERNAME']}")
+            print(f"  Password: {password}")
 
     @staticmethod
     def _env_value(value: str) -> str:
@@ -429,6 +449,7 @@ to key authentication instead.
         services = self.discover_services()
         sudo_mode = self.verify_remote_capture_prerequisites()
         config = self.build_config(vm_ip, services)
+        self.print_tulip_credentials(config)
         self.write_remote_config(config, interface, sudo_mode)
 
         if not self.args.no_start:
