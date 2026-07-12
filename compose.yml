@@ -74,6 +74,32 @@ services:
       TULIP_DEST_DIR: /traffic
       TULIP_ROTATE_INTERVAL: "${INGESTOR_ROTATE}"
 
+  # This profile is enabled by remote_setup.py. It executes tcpdump on the
+  # remote host over SSH and forwards its stdout to the local ingestor over
+  # the private Compose network. No Tulip service runs on the remote host and
+  # the ingestor does not need to be exposed outside this machine.
+  remote-capture:
+    profiles: ["remote"]
+    build:
+      context: services/
+      target: remote-capture
+    restart: unless-stopped
+    depends_on:
+      - ingestor
+    environment:
+      REMOTE_SSH_HOST: ${REMOTE_SSH_HOST:-}
+      REMOTE_SSH_PORT: ${REMOTE_SSH_PORT:-22}
+      REMOTE_SSH_USER: ${REMOTE_SSH_USER:-}
+      REMOTE_SSH_AUTH: ${REMOTE_SSH_AUTH:-password}
+      REMOTE_SSH_IDENTITY_FILE: ${REMOTE_SSH_IDENTITY_FILE:-/root/.ssh/id_remote}
+      REMOTE_SSH_PASSWORD_FILE: ${REMOTE_SSH_PASSWORD_FILE:-/root/.ssh/password}
+      REMOTE_CAPTURE_INTERFACE: ${REMOTE_CAPTURE_INTERFACE:-}
+      REMOTE_CAPTURE_FILTER: ${REMOTE_CAPTURE_FILTER:-}
+      REMOTE_CAPTURE_SNAPLEN: ${REMOTE_CAPTURE_SNAPLEN:-0}
+      REMOTE_CAPTURE_USE_SUDO: ${REMOTE_CAPTURE_USE_SUDO:-true}
+    volumes:
+      - ${REMOTE_SSH_DIR:-./.tulip/ssh}:/root/.ssh:ro
+
   enricher:
     build:
       context: services/

@@ -60,3 +60,13 @@ ENTRYPOINT ["./mcp"]
 FROM base AS ingestor
 COPY --from=builder /build/ingestor /app/ingestor
 ENTRYPOINT ["/app/ingestor"]
+
+### REMOTE CAPTURE
+# This image is intentionally small: it only establishes the SSH stream from
+# the local Tulip host to a remote tcpdump process.
+FROM alpine:${ALPINE_VERSION} AS remote-capture
+RUN apk add --no-cache netcat-openbsd openssh-client
+COPY remote-capture/run.sh /app/run.sh
+COPY remote-capture/askpass.sh /app/askpass.sh
+RUN chmod 0755 /app/run.sh /app/askpass.sh
+ENTRYPOINT ["/app/run.sh"]
