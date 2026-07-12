@@ -46,7 +46,7 @@ class RemoteSetup:
             epilog="""
 Examples:
   ./remote_setup.py
-  ./remote_setup.py --ssh-host game.example --ssh-user ctf
+  ./remote_setup.py --ssh-host game.example
   ./remote_setup.py --ssh-host game.example --ssh-auth key --identity-file ~/.ssh/game_ed25519
   ./remote_setup.py --ssh-host game.example --capture-filter 'tcp and port 5000'
 
@@ -57,7 +57,7 @@ to key authentication instead.
             """,
         )
         parser.add_argument("--ssh-host", help="Remote SSH hostname or IP address; prompted when omitted")
-        parser.add_argument("--ssh-user", help="Remote SSH user; prompted when omitted")
+        parser.add_argument("--ssh-user", default="root", help="Remote SSH user (default: root)")
         parser.add_argument("--ssh-port", type=int, default=22, help="Remote SSH port (default: 22)")
         parser.add_argument("--ssh-auth", choices=("password", "key"), default="password", help="SSH authentication method (default: password)")
         parser.add_argument("--identity-file", metavar="PATH", help="SSH private key; required for --ssh-auth key")
@@ -418,11 +418,6 @@ to key authentication instead.
             self.args.ssh_host = input("Remote server IP or hostname: ").strip()
         if not self.args.ssh_host:
             raise RemoteSetupError("Remote SSH host cannot be empty")
-        if not self.args.ssh_user:
-            if not sys.stdin.isatty():
-                raise RemoteSetupError("Pass --ssh-user when setup is non-interactive")
-            default_user = os.environ.get("USER", "root")
-            self.args.ssh_user = input(f"Remote SSH user [{default_user}]: ").strip() or default_user
         if not 1 <= self.args.ssh_port <= 65535:
             raise RemoteSetupError("--ssh-port must be between 1 and 65535")
         if self.args.snaplen < 0:
