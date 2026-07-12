@@ -70,7 +70,7 @@ to key authentication instead.
         parser.add_argument("--tick-start", help="Override TICK_START with an ISO-8601 datetime")
         parser.add_argument("--flag-regex", help="Override the flag regex")
         parser.add_argument("--flagid-url", help="Override the FlagID endpoint")
-        parser.add_argument("--frontend-addr", default="127.0.0.1:3030", help="Local Tulip UI bind address")
+        parser.add_argument("--frontend-addr", default="0.0.0.0:3030", help="Tulip UI bind address (default: all local network interfaces)")
         parser.add_argument("--traffic-dir", default="./traffic", help="Local directory for rotated PCAP files")
         parser.add_argument("--ingestor-rotate", default="30s", help="Local PCAP rotation interval")
         parser.add_argument("--no-start", action="store_true", help="Write configuration but do not start Compose")
