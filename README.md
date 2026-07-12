@@ -121,6 +121,10 @@ the same protected password is supplied to `sudo` without putting it in a
 command line. Key authentication remains available with `--ssh-auth key
 --identity-file PATH`, which requires root access or passwordless `sudo`.
 
+Remote setup deliberately accepts any SSH host fingerprint, including a
+changed one. This is convenient for rebuilt CTF hosts, but removes SSH's
+protection against connecting to an impersonated host.
+
 No port forwarding or public ingestor port is required. The local
 `remote-capture` service streams `tcpdump -w -` through the existing SSH
 connection into the private Compose network. It automatically excludes that

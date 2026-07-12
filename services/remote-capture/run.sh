@@ -94,7 +94,7 @@ esac
 remote_command="$remote_command -n -i $interface_quoted -s $REMOTE_CAPTURE_SNAPLEN -U -w - -- \"\$capture_filter\""
 
 ssh_args="-T $ssh_stdin -p $REMOTE_SSH_PORT $ssh_auth_args \
-    -o StrictHostKeyChecking=yes \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
     -o ConnectTimeout=15"
 

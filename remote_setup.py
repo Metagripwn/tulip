@@ -61,7 +61,6 @@ to key authentication instead.
         parser.add_argument("--ssh-port", type=int, default=22, help="Remote SSH port (default: 22)")
         parser.add_argument("--ssh-auth", choices=("password", "key"), default="password", help="SSH authentication method (default: password)")
         parser.add_argument("--identity-file", metavar="PATH", help="SSH private key; required for --ssh-auth key")
-        parser.add_argument("--accept-new-host-key", action="store_true", help="Trust a newly scanned SSH host key without prompting")
         parser.add_argument("--interface", help=f"Remote interface to capture (default: auto-detect, preferring {DEFAULT_GAME_INTERFACE!r})")
         parser.add_argument("--capture-filter", default="", help="Additional tcpdump BPF expression")
         parser.add_argument("--snaplen", type=int, default=0, help="tcpdump snapshot length; 0 keeps complete packets")
@@ -140,7 +139,9 @@ to key authentication instead.
             ])
         prefix.extend([
             "-p", str(self.args.ssh_port),
-            "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known_hosts}",
+            # Remote hosts in CTF environments are frequently rebuilt. Deliberately
+            # accept their presented key instead of blocking on a fingerprint change.
+            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
             "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
             f"{self.args.ssh_user}@{self.args.ssh_host}",
         ])
@@ -198,42 +199,8 @@ to key authentication instead.
             askpass.write_text('#!/bin/sh\ncat "$(dirname "$0")/password"\n', encoding="utf-8")
             os.chmod(askpass, 0o700)
 
-        host_patterns = [self.args.ssh_host]
-        if self.args.ssh_port != 22:
-            host_patterns.insert(0, f"[{self.args.ssh_host}]:{self.args.ssh_port}")
-        system_known_hosts = Path.home() / ".ssh/known_hosts"
-        entries: List[str] = []
-        if system_known_hosts.exists():
-            for pattern in host_patterns:
-                result = subprocess.run(
-                    ["ssh-keygen", "-F", pattern, "-f", str(system_known_hosts)],
-                    capture_output=True, text=True,
-                )
-                entries.extend(line for line in result.stdout.splitlines() if line and not line.startswith("#"))
-
-        if not entries:
-            scan = subprocess.run(
-                ["ssh-keyscan", "-p", str(self.args.ssh_port), self.args.ssh_host],
-                capture_output=True, text=True, timeout=15,
-            )
-            scanned_entries = [line for line in scan.stdout.splitlines() if line and not line.startswith("#")]
-            if not scanned_entries:
-                raise RemoteSetupError("Could not retrieve an SSH host key with ssh-keyscan")
-            fingerprint = subprocess.run(
-                ["ssh-keygen", "-lf", "-"], input="\n".join(scanned_entries) + "\n",
-                capture_output=True, text=True,
-            ).stdout.strip()
-            if not self.args.accept_new_host_key and not self.prompt_yes_no(
-                f"Trust new SSH host key for {self.args.ssh_host}?\n{fingerprint}", default=False,
-            ):
-                raise RemoteSetupError("SSH host key was not trusted")
-            entries = scanned_entries
-
-        self.known_hosts.write_text("\n".join(dict.fromkeys(entries)) + "\n", encoding="utf-8")
-        os.chmod(self.known_hosts, 0o600)
-
         self.remote("printf tulip-remote-ok", timeout=20)
-        print(f"✓ Connected to {self.args.ssh_user}@{self.args.ssh_host} with a verified SSH host key")
+        print(f"✓ Connected to {self.args.ssh_user}@{self.args.ssh_host}")
 
     def remote_json(self, command: str) -> Any:
         output = self.remote(command).stdout
@@ -442,7 +409,7 @@ to key authentication instead.
 
     def run(self) -> None:
         self.args = self.parse_args()
-        for command in ("docker", "ssh", "ssh-keygen", "ssh-keyscan"):
+        for command in ("docker", "ssh"):
             if shutil.which(command) is None:
                 raise RemoteSetupError(f"Required local command was not found in PATH: {command}")
         if not self.args.ssh_host:
