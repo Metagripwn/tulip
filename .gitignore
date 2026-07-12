@@ -118,6 +118,7 @@ celerybeat-schedule
 .env
 .env.backup.*
 .tulip-config.json
+.tulip/
 .venv
 env/
 venv/
