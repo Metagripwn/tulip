@@ -73,7 +73,6 @@ to key authentication instead.
         parser.add_argument("--frontend-addr", default="127.0.0.1:3030", help="Local Tulip UI bind address")
         parser.add_argument("--traffic-dir", default="./traffic", help="Local directory for rotated PCAP files")
         parser.add_argument("--ingestor-rotate", default="30s", help="Local PCAP rotation interval")
-        parser.add_argument("--install-tcpdump", action="store_true", help="Install tcpdump remotely when it is missing")
         parser.add_argument("--no-start", action="store_true", help="Write configuration but do not start Compose")
         parser.add_argument("--force", action="store_true", help="Overwrite local .env settings instead of merging them")
         parser.add_argument("--no-backup", action="store_true", help="Do not back up an existing .env")
@@ -126,9 +125,9 @@ to key authentication instead.
             raise RemoteSetupError("No standard SSH identity found; pass --identity-file PATH")
         return Path(self.choose("Select the SSH identity", [str(path) for path in candidates])).expanduser()
 
-    def _ssh_prefix(self, known_hosts: Path) -> List[str]:
+    def _ssh_prefix(self, known_hosts: Path, read_stdin: bool = False) -> List[str]:
         prefix = [
-            "ssh", "-T", "-n", "-p", str(self.args.ssh_port),
+            "ssh", "-T", "-p", str(self.args.ssh_port),
             "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known_hosts}",
             "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
         ]
@@ -142,9 +141,13 @@ to key authentication instead.
                 "-o", "PreferredAuthentications=password,keyboard-interactive", "-o", "NumberOfPasswordPrompts=1",
             ]
         prefix.append(f"{self.args.ssh_user}@{self.args.ssh_host}")
+        if not read_stdin:
+            prefix.insert(3, "-n")
         return prefix
 
-    def remote(self, command: str, check: bool = True, timeout: int = 20) -> subprocess.CompletedProcess:
+    def remote(
+        self, command: str, check: bool = True, timeout: int = 20, stdin_data: Optional[str] = None,
+    ) -> subprocess.CompletedProcess:
         if self.args.ssh_auth == "password" and self.password_file is None:
             raise RemoteSetupError("SSH password has not been prepared")
         environment = os.environ.copy()
@@ -155,11 +158,12 @@ to key authentication instead.
                 "DISPLAY": "tulip-remote-setup",
             })
         result = subprocess.run(
-            self._ssh_prefix(self.known_hosts) + [command],
+            self._ssh_prefix(self.known_hosts, read_stdin=stdin_data is not None) + [command],
             capture_output=True,
             text=True,
             timeout=timeout,
             env=environment,
+            input=stdin_data,
         )
         if check and result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip() or "unknown SSH error"
@@ -300,42 +304,62 @@ to key authentication instead.
             self.local.validate_service_list(value)
         return value
 
-    def install_tcpdump(self, use_sudo: bool) -> None:
-        prefix = "sudo -n " if use_sudo else ""
+    def remote_sudo(self, command: str, sudo_mode: str, timeout: int = 20) -> subprocess.CompletedProcess:
+        if sudo_mode == "false":
+            return self.remote(command, timeout=timeout)
+        if sudo_mode == "true":
+            return self.remote(f"sudo -n {command}", timeout=timeout)
+        if sudo_mode == "password":
+            if self.password_file is None:
+                raise RemoteSetupError("A password-authenticated SSH session is required for sudo password mode")
+            return self.remote(
+                f"sudo -S -p '' {command}", timeout=timeout,
+                stdin_data=self.password_file.read_text(encoding="utf-8"),
+            )
+        raise RemoteSetupError(f"Unknown sudo mode: {sudo_mode}")
+
+    def install_tcpdump(self, sudo_mode: str) -> None:
         command = (
             "if command -v apt-get >/dev/null; then "
-            f"{prefix}apt-get update && {prefix}apt-get install -y tcpdump; "
+            "apt-get update && apt-get install -y tcpdump; "
             "elif command -v dnf >/dev/null; then "
-            f"{prefix}dnf install -y tcpdump; "
+            "dnf install -y tcpdump; "
             "elif command -v yum >/dev/null; then "
-            f"{prefix}yum install -y tcpdump; "
+            "yum install -y tcpdump; "
             "elif command -v apk >/dev/null; then "
-            f"{prefix}apk add tcpdump; "
+            "apk add tcpdump; "
             "else exit 127; fi"
         )
-        self.remote(command, timeout=180)
+        self.remote_sudo(command, sudo_mode, timeout=180)
 
-    def verify_remote_capture_prerequisites(self) -> bool:
+    def verify_remote_capture_prerequisites(self) -> str:
         is_root = self.remote("test \"$(id -u)\" = 0", check=False).returncode == 0
-        use_sudo = not is_root
-        if use_sudo and self.remote("sudo -n true", check=False).returncode != 0:
-            raise RemoteSetupError(
-                "Remote capture needs passwordless sudo for tcpdump. Configure a narrow NOPASSWD sudo rule "
-                "for tcpdump, or connect as root. Password authentication cannot keep a reconnecting capture alive."
-            )
+        sudo_mode = "false"
+        if not is_root:
+            if self.remote("sudo -n true", check=False).returncode == 0:
+                sudo_mode = "true"
+            elif self.args.ssh_auth == "password" and self.password_file is not None:
+                try:
+                    self.remote_sudo("true", "password")
+                    sudo_mode = "password"
+                except RemoteSetupError as error:
+                    raise RemoteSetupError(
+                        "Remote sudo rejected the SSH password. Use a root SSH account, configure passwordless sudo, "
+                        "or make the SSH and sudo passwords match."
+                    ) from error
+            else:
+                raise RemoteSetupError(
+                    "Remote capture needs passwordless sudo for tcpdump when using key authentication, or a root SSH account."
+                )
 
         if self.remote("command -v tcpdump", check=False).returncode != 0:
-            install = self.args.install_tcpdump or self.prompt_yes_no("tcpdump is missing remotely. Install it now", default=True)
-            if not install:
-                raise RemoteSetupError("tcpdump is required on the remote host")
-            print("Installing tcpdump on the remote host...")
-            self.install_tcpdump(use_sudo)
+            print("tcpdump is missing remotely; installing it now...")
+            self.install_tcpdump(sudo_mode)
 
         if self.args.capture_filter:
-            prefix = "sudo -n " if use_sudo else ""
-            self.remote(f"{prefix}tcpdump -d -- {self._shell_quote(self.args.capture_filter)} >/dev/null")
+            self.remote_sudo(f"tcpdump -d -- {self._shell_quote(self.args.capture_filter)} >/dev/null", sudo_mode)
         print("✓ Remote tcpdump and capture privileges are ready")
-        return use_sudo
+        return sudo_mode
 
     @staticmethod
     def _shell_quote(value: str) -> str:
@@ -381,7 +405,7 @@ to key authentication instead.
     def _env_value(value: str) -> str:
         return value.replace("$", "$$").replace('"', '\\"').replace("\n", "")
 
-    def write_remote_config(self, config: Dict[str, str], interface: str, use_sudo: bool) -> None:
+    def write_remote_config(self, config: Dict[str, str], interface: str, sudo_mode: str) -> None:
         if self.local.env_path.exists() and not self.args.no_backup:
             backup = self.local.backup_env_file()
             if backup:
@@ -400,7 +424,7 @@ to key authentication instead.
             "REMOTE_CAPTURE_INTERFACE": interface,
             "REMOTE_CAPTURE_FILTER": self.args.capture_filter,
             "REMOTE_CAPTURE_SNAPLEN": str(self.args.snaplen),
-            "REMOTE_CAPTURE_USE_SUDO": str(use_sudo).lower(),
+            "REMOTE_CAPTURE_USE_SUDO": sudo_mode,
         }
         with self.local.env_path.open("a", encoding="utf-8") as env_file:
             env_file.write("\n# Remote capture (managed by remote_setup.py)\n")
@@ -440,9 +464,9 @@ to key authentication instead.
         self.prepare_ssh_material()
         interface, vm_ip = self.discover_interface_and_ip()
         services = self.discover_services()
-        use_sudo = self.verify_remote_capture_prerequisites()
+        sudo_mode = self.verify_remote_capture_prerequisites()
         config = self.build_config(vm_ip, services)
-        self.write_remote_config(config, interface, use_sudo)
+        self.write_remote_config(config, interface, sudo_mode)
 
         if not self.args.no_start:
             self.start()

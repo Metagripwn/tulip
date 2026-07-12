@@ -71,14 +71,29 @@ if [ -n "$REMOTE_CAPTURE_FILTER" ]; then
     remote_command="$remote_command user_filter=$filter_quoted; capture_filter=\"\$capture_filter and (\$user_filter)\";"
 fi
 
-if [ "$REMOTE_CAPTURE_USE_SUDO" = "true" ]; then
-    remote_command="$remote_command exec sudo -n tcpdump"
-else
-    remote_command="$remote_command exec tcpdump"
-fi
+case "$REMOTE_CAPTURE_USE_SUDO" in
+    false)
+        remote_command="$remote_command exec tcpdump"
+        ssh_stdin="-n"
+        ;;
+    true)
+        remote_command="$remote_command exec sudo -n tcpdump"
+        ssh_stdin="-n"
+        ;;
+    password)
+        # Reuse the protected SSH-password file for sudo. The password is
+        # supplied only on SSH stdin to `sudo -S`, never in an argument.
+        remote_command="$remote_command exec sudo -S -p '' tcpdump"
+        ssh_stdin=""
+        ;;
+    *)
+        echo "remote-capture: REMOTE_CAPTURE_USE_SUDO must be false, true, or password" >&2
+        exit 1
+        ;;
+esac
 remote_command="$remote_command -n -i $interface_quoted -s $REMOTE_CAPTURE_SNAPLEN -U -w - -- \"\$capture_filter\""
 
-ssh_args="-T -n -p $REMOTE_SSH_PORT $ssh_auth_args \
+ssh_args="-T $ssh_stdin -p $REMOTE_SSH_PORT $ssh_auth_args \
     -o StrictHostKeyChecking=yes \
     -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
     -o ConnectTimeout=15"
@@ -86,8 +101,13 @@ ssh_args="-T -n -p $REMOTE_SSH_PORT $ssh_auth_args \
 echo "remote-capture: streaming ${REMOTE_SSH_USER}@${REMOTE_SSH_HOST}:${REMOTE_CAPTURE_INTERFACE} to local ingestor" >&2
 
 while true; do
-    # shellcheck disable=SC2086
-    ssh $ssh_args "${REMOTE_SSH_USER}@${REMOTE_SSH_HOST}" "$remote_command" | nc ingestor 9999
+    if [ "$REMOTE_CAPTURE_USE_SUDO" = "password" ]; then
+        # shellcheck disable=SC2086
+        cat "$REMOTE_SSH_PASSWORD_FILE" | ssh $ssh_args "${REMOTE_SSH_USER}@${REMOTE_SSH_HOST}" "$remote_command" | nc ingestor 9999
+    else
+        # shellcheck disable=SC2086
+        ssh $ssh_args "${REMOTE_SSH_USER}@${REMOTE_SSH_HOST}" "$remote_command" | nc ingestor 9999
+    fi
     status=$?
     echo "remote-capture: stream ended (status $status); retrying in 5 seconds" >&2
     sleep 5
