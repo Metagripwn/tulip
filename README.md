@@ -92,6 +92,44 @@ The higher the rotation interval, the more delay there will be before the traffi
 
 See [DEVELOPMENT.md](DEVELOPMENT.md) for more information on the internal workings of Tulip.
 
+## Capturing from a remote server
+
+Use `remote_setup.py` when the game or service machine should only capture
+packets while Tulip itself (storage, assembly, Suricata, database, and UI)
+runs on your local machine:
+
+```shell
+./remote_setup.py
+```
+
+The script discovers the remote capture interface, its IPv4 address, and
+published Docker service ports where possible. It writes the local `.env`,
+copies only the selected SSH key into the ignored `.tulip/ssh` directory, and
+starts `docker compose --profile remote up -d --build`.
+
+The script prompts for the remote server IP/hostname, SSH user, and SSH
+password. The password is never put in `.env`, a Compose command, or a log; it
+is stored in a mode-0600 file under ignored `.tulip/ssh` so the local capture
+service can reconnect after a network interruption. The remote host needs
+`tcpdump`; when it is missing, setup automatically installs it with the
+remote account's privileges. For a non-root password-authenticated account,
+the same protected password is supplied to `sudo` without putting it in a
+command line. Key authentication remains available with `--ssh-auth key
+--identity-file PATH`, which requires root access or passwordless `sudo`.
+
+No port forwarding or public ingestor port is required. The local
+`remote-capture` service streams `tcpdump -w -` through the existing SSH
+connection into the private Compose network. It automatically excludes that
+SSH connection from the BPF expression so the capture cannot include its own
+PCAP transport. Use `--capture-filter`, for example
+`--capture-filter 'tcp and port 5000'`, to reduce remote and network load.
+
+Inspect the capture with:
+
+```shell
+docker compose --profile remote logs -f remote-capture
+```
+
 ## Suricata synchronization
 
 #### TLDR: Modify `suricata.rules` and profit!
