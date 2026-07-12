@@ -385,9 +385,9 @@ to key authentication instead.
         """Display the only copy of the generated UI password before writing .env."""
         password = config.get("_TULIP_AUTH_PASSWORD_PLAINTEXT")
         if password:
-            print("\nTulip UI credentials (save these now):")
-            print(f"  Username: {config['TULIP_AUTH_USERNAME']}")
-            print(f"  Password: {password}")
+            print("\nTulip UI credentials (save these now):", flush=True)
+            print(f"  Username: {config['TULIP_AUTH_USERNAME']}", flush=True)
+            print(f"  Password: {password}", flush=True)
 
     @staticmethod
     def _env_value(value: str) -> str:
@@ -457,6 +457,7 @@ to key authentication instead.
         print("\nTulip is configured locally.")
         print(f"UI: http://{config['FRONTEND_ADDR'].replace('0.0.0.0', 'localhost')}")
         print("Remote capture status: docker compose --profile remote logs -f remote-capture")
+        self.print_tulip_credentials(config)
 
 
 if __name__ == "__main__":
